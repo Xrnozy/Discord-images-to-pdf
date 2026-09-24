@@ -232,6 +232,27 @@ select {
   font-size: 1rem;
 }
 
+.pdf-viewer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.pdf-viewer-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+#pdf-viewer {
+  width: 100%;
+  height: min(80vh, 900px);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #111;
+}
+
 .thumb-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -282,6 +303,43 @@ select {
 
 .toast.ok { border-color: var(--success); }
 .toast.err { border-color: var(--error); }
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+}
+
+.modal-card {
+  width: min(100%, 440px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.5rem;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+}
+
+.modal-card h3 {
+  margin: 0 0 0.75rem;
+  font-size: 1.1rem;
+}
+
+.confirm-message {
+  margin: 0 0 1.25rem;
+  color: var(--muted);
+  line-height: 1.55;
+  white-space: pre-line;
+}
+
+.confirm-actions {
+  justify-content: flex-end;
+  margin-top: 0;
+}
 
 .lightbox {
   position: fixed;

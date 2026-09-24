@@ -74,7 +74,6 @@
       <div class="button-row">
         <button id="retrieve-btn" class="btn primary" disabled>Retrieve Screenshots</button>
         <button id="full-rescan-btn" class="btn secondary" disabled>Full Rescan</button>
-        <button id="reset-downloads-btn" class="btn danger" disabled>Reset Downloads</button>
       </div>
     </section>
 
@@ -105,8 +104,20 @@
       </div>
       <div class="button-row">
         <button id="generate-all-btn" class="btn primary">Generate All PDFs</button>
+        <button id="reset-downloads-btn" class="btn danger" disabled>Reset Downloads</button>
       </div>
       <div id="date-groups"></div>
+    </section>
+
+    <section class="card hidden" id="pdf-viewer-section">
+      <div class="pdf-viewer-header">
+        <h2 id="pdf-viewer-title">PDF Viewer</h2>
+        <div class="button-row">
+          <button id="pdf-explorer-btn" type="button" class="btn secondary">Open in Explorer</button>
+          <button id="pdf-viewer-close" type="button" class="btn secondary">Close</button>
+        </div>
+      </div>
+      <iframe id="pdf-viewer" title="PDF preview"></iframe>
     </section>
   </div>
 
@@ -117,6 +128,17 @@
     <div class="lightbox-content">
       <img id="lightbox-img" src="" alt="">
       <div id="lightbox-meta" class="lightbox-meta"></div>
+    </div>
+  </div>
+
+  <div id="confirm-dialog" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div class="modal-card">
+      <h3 id="confirm-title">Confirm reset</h3>
+      <p id="confirm-message" class="confirm-message"></p>
+      <div class="button-row confirm-actions">
+        <button id="confirm-cancel" type="button" class="btn secondary">Cancel</button>
+        <button id="confirm-ok" type="button" class="btn danger">Reset</button>
+      </div>
     </div>
   </div>
 

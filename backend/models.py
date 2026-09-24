@@ -89,6 +89,7 @@ class ResetDownloadsRequest(BaseModel):
     channel_id: str | None = None
     channel_name: str | None = None
     all_in_category: bool = False
+    capture_date: str | None = None  # YYYY-MM-DD; omit to reset entire selection
 
 
 class RetrievalSummary(BaseModel):

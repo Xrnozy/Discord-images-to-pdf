@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
 import threading
 import webbrowser
 from collections import defaultdict
@@ -24,7 +26,6 @@ from backend.env_config import (
 )
 from backend.image_processor import (
     dates_on_disk,
-    delete_all_downloaded_images,
     ensure_thumbnail,
     list_images_by_folder_name,
     process_attachment,
@@ -611,6 +612,7 @@ async def api_reset_downloads(body: ResetDownloadsRequest):
         deleted = reset_selection_downloads(
             all_in_category=True,
             category_channel_ids=category_channel_ids,
+            capture_date=body.capture_date,
         )
     else:
         if not body.channel_id and not body.channel_name:
@@ -621,6 +623,7 @@ async def api_reset_downloads(body: ResetDownloadsRequest):
         deleted = reset_selection_downloads(
             channel_id=body.channel_id,
             channel_name=body.channel_name,
+            capture_date=body.capture_date,
         )
     return {"deleted": deleted}
 
@@ -660,12 +663,10 @@ async def api_generate_pdf(body: GeneratePdfRequest):
             "files": [str(path.relative_to(ROOT))],
         }
     output_folder, paths = generate_all_pdfs(images, label)
-    deleted = delete_all_downloaded_images(images)
     return {
         "generated": len(paths),
         "output_folder": str(output_folder.relative_to(ROOT)),
         "files": [str(p.relative_to(ROOT)) for p in paths],
-        "deleted_images": deleted,
     }
 
 
@@ -703,16 +704,40 @@ async def api_image(attachment_id: str):
     return FileResponse(path, media_type=media, filename=record.get("filename", path.name))
 
 
-@app.get("/api/download-pdf/{folder_name}/{date_key}")
-async def api_download_pdf(folder_name: str, date_key: str):
-    pdf_path = ROOT / "output" / folder_name / f"screenshots_{date_key}.pdf"
+def _pdf_path(folder_name: str, date_key: str) -> Path:
+    return ROOT / "output" / folder_name / f"screenshots_{date_key}.pdf"
+
+
+def _open_path_in_file_manager(path: Path) -> None:
+    resolved = str(path.resolve())
+    if sys.platform == "win32":
+        subprocess.Popen(["explorer", "/select,", resolved])
+        return
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", resolved])
+        return
+    subprocess.Popen(["xdg-open", str(path.parent)])
+
+
+@app.get("/api/view-pdf/{folder_name}/{date_key}")
+async def api_view_pdf(folder_name: str, date_key: str):
+    pdf_path = _pdf_path(folder_name, date_key)
     if not pdf_path.exists():
         raise HTTPException(status_code=404, detail="PDF not found. Generate it first.")
     return FileResponse(
         pdf_path,
         media_type="application/pdf",
-        filename=pdf_path.name,
+        headers={"Content-Disposition": f'inline; filename="{pdf_path.name}"'},
     )
+
+
+@app.post("/api/open-pdf/{folder_name}/{date_key}")
+async def api_open_pdf_in_explorer(folder_name: str, date_key: str):
+    pdf_path = _pdf_path(folder_name, date_key)
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="PDF not found. Generate it first.")
+    _open_path_in_file_manager(pdf_path)
+    return {"opened": True, "path": str(pdf_path.relative_to(ROOT))}
 
 
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

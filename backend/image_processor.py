@@ -345,7 +345,9 @@ def delete_image_files(record: dict[str, Any]) -> None:
         thumb.unlink()
 
 
-def delete_all_downloaded_images(records: list[dict[str, Any]]) -> int:
+def delete_all_downloaded_images(
+    records: list[dict[str, Any]], *, clear_channel_watermarks: bool = True
+) -> int:
     deleted = 0
     ids: list[str] = []
     channel_ids: set[str] = set()
@@ -356,12 +358,19 @@ def delete_all_downloaded_images(records: list[dict[str, Any]]) -> int:
             channel_ids.add(record["channel_id"])
         deleted += 1
     remove_images(ids)
-    clear_watermarks(list(channel_ids))
+    if clear_channel_watermarks:
+        clear_watermarks(list(channel_ids))
     return deleted
 
 
 def delete_channel_download_folder(channel_name: str) -> None:
     folder = DOWNLOADS_DIR / _sanitize_folder_name(channel_name)
+    if folder.is_dir():
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def delete_channel_date_folder(channel_name: str, capture_date: str) -> None:
+    folder = DOWNLOADS_DIR / _sanitize_folder_name(channel_name) / capture_date
     if folder.is_dir():
         shutil.rmtree(folder, ignore_errors=True)
 
@@ -402,12 +411,15 @@ def reset_selection_downloads(
     channel_name: str | None = None,
     all_in_category: bool = False,
     category_channel_ids: list[str] | None = None,
+    capture_date: str | None = None,
 ) -> int:
-    """Delete downloads for the selected channel(s) only. Other channels are untouched."""
+    """Delete downloads for the selected channel(s), optionally scoped to one date."""
     images: list[dict[str, Any]] = []
     seen: set[str] = set()
     folders: set[str] = set()
+    channel_names: set[str] = set()
     watermark_ids: set[str] = set()
+    date_key = (capture_date or "").strip()
 
     if all_in_category:
         allowed = [cid for cid in (category_channel_ids or []) if cid]
@@ -429,6 +441,8 @@ def reset_selection_downloads(
                     images.append(img)
                     seen.add(img["attachment_id"])
             folders.update(batch_folders)
+            if cname:
+                channel_names.add(cname)
             watermark_ids.add(cid)
     else:
         if not channel_id and not channel_name:
@@ -439,16 +453,34 @@ def reset_selection_downloads(
         )
         images = batch
         folders = batch_folders
+        if channel_name:
+            channel_names.add(channel_name)
         if channel_id:
             watermark_ids.add(channel_id)
 
-    deleted = delete_all_downloaded_images(images)
-    if watermark_ids:
-        clear_watermarks(list(watermark_ids))
-    for folder in folders:
-        path = DOWNLOADS_DIR / folder
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
+    if date_key:
+        images = [img for img in images if img.get("capture_date") == date_key]
+
+    deleted = delete_all_downloaded_images(
+        images, clear_channel_watermarks=not date_key
+    )
+
+    if date_key:
+        names_to_clean = set(channel_names)
+        for img in images:
+            name = img.get("channel_name", "")
+            if name:
+                names_to_clean.add(name)
+        for name in names_to_clean:
+            delete_channel_date_folder(name, date_key)
+    else:
+        if watermark_ids:
+            clear_watermarks(list(watermark_ids))
+        for folder in folders:
+            path = DOWNLOADS_DIR / folder
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+
     return deleted
 
 

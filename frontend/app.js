@@ -4,7 +4,9 @@ let selectedGuild = "";
 let selectedCategory = "";
 let selectedChannel = "";
 let pollTimer = null;
-let lastOutputFolder = "";
+/** @type {Record<string, string>} date -> output folder name */
+let pdfByDate = {};
+let currentPdfDate = "";
 let cachedResults = null;
 let lightboxImages = [];
 let lightboxIndex = 0;
@@ -47,6 +49,40 @@ function toast(msg, type = "ok") {
   setTimeout(() => el.classList.add("hidden"), 4000);
 }
 
+function showConfirm({ title, message, confirmLabel = "Confirm" }) {
+  return new Promise((resolve) => {
+    $("confirm-title").textContent = title;
+    $("confirm-message").textContent = message;
+    $("confirm-ok").textContent = confirmLabel;
+
+    const dialog = $("confirm-dialog");
+    dialog.classList.remove("hidden");
+
+    const cleanup = (result) => {
+      dialog.classList.add("hidden");
+      $("confirm-ok").removeEventListener("click", onOk);
+      $("confirm-cancel").removeEventListener("click", onCancel);
+      dialog.removeEventListener("click", onBackdrop);
+      document.removeEventListener("keydown", onKeydown);
+      resolve(result);
+    };
+
+    const onOk = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    const onBackdrop = (e) => {
+      if (e.target === dialog) cleanup(false);
+    };
+    const onKeydown = (e) => {
+      if (e.key === "Escape") cleanup(false);
+    };
+
+    $("confirm-ok").addEventListener("click", onOk);
+    $("confirm-cancel").addEventListener("click", onCancel);
+    dialog.addEventListener("click", onBackdrop);
+    document.addEventListener("keydown", onKeydown);
+  });
+}
+
 async function api(path, options = {}) {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -72,7 +108,6 @@ function showConnected(username, tokenSaved = false, retrievalChannel = "") {
   $("select-section").classList.remove("hidden");
   $("retrieve-btn").disabled = false;
   $("full-rescan-btn").disabled = false;
-  $("reset-downloads-btn").disabled = false;
   if (tokenSaved) {
     $("saved-token-row").classList.remove("hidden");
     $("token-row").classList.add("hidden");
@@ -405,21 +440,43 @@ $("stop-btn").addEventListener("click", async () => {
 
 $("reset-downloads-btn").addEventListener("click", resetDownloads);
 
+function selectedResultsDateFilter() {
+  const value = $("date-filter").value;
+  return value && value !== "all" ? value : null;
+}
+
+function resetConfirmMessage(label, captureDate) {
+  if (captureDate) {
+    return (
+      `Delete downloaded screenshots for "${label}" on ${captureDate}?\n\n` +
+      "Only images for this date will be removed. Other dates and channels are not affected.\n" +
+      "PDFs in output/ are not affected.\n\n" +
+      "This cannot be undone."
+    );
+  }
+  const scope = $("all-in-category").checked
+    ? "all channels in this category"
+    : "the selected channel";
+  return (
+    `Delete all downloaded screenshots for "${label}"?\n\n` +
+    `Everything under ${scope} will be removed. Other channels in downloads/ are not affected.\n` +
+    "PDFs in output/ are not affected.\n\n" +
+    "This cannot be undone."
+  );
+}
+
 async function resetDownloads() {
   if (!hasChannelSelection()) {
     toast("Select a channel first.", "err");
     return;
   }
   const label = selectedChannelName();
-  const scope = $("all-in-category").checked
-    ? "all channels in this category"
-    : "only the selected channel";
-  const ok = confirm(
-    `Reset downloaded screenshots for "${label}"?\n\n` +
-      `Only ${scope} will be deleted. Other channels in downloads/ are not affected.\n` +
-      "PDFs in output/ are not affected.\n\n" +
-      "This cannot be undone."
-  );
+  const captureDate = selectedResultsDateFilter();
+  const ok = await showConfirm({
+    title: captureDate ? `Reset ${captureDate}?` : "Reset all downloads?",
+    message: resetConfirmMessage(label, captureDate),
+    confirmLabel: captureDate ? "Reset date" : "Reset all",
+  });
   if (!ok) return;
 
   const params = selectionQueryParams();
@@ -427,6 +484,7 @@ async function resetDownloads() {
     channel_id: params?.get("channel_id") || null,
     channel_name: params?.get("channel_name") || label,
     all_in_category: params?.get("all_in_category") === "true",
+    capture_date: captureDate,
   };
 
   try {
@@ -434,10 +492,13 @@ async function resetDownloads() {
       method: "POST",
       body: JSON.stringify(body),
     });
-    cachedResults = null;
-    $("results-section").classList.add("hidden");
-    $("date-groups").innerHTML = "";
+    if (captureDate) {
+      delete pdfByDate[captureDate];
+    } else {
+      pdfByDate = {};
+    }
     await loadRetrieveDateOptions();
+    await loadResults();
     toast(`Reset complete. ${result.deleted} image(s) removed.`);
   } catch (err) {
     toast(err.message, "err");
@@ -566,6 +627,61 @@ function showLightboxImage() {
   );
 }
 
+function pdfViewUrl(folder, date) {
+  return `/api/view-pdf/${encodeURIComponent(folder)}/${encodeURIComponent(date)}`;
+}
+
+function registerGeneratedPdf(date, outputFolder) {
+  const folder = outputFolder.split(/[/\\]/).pop() || "";
+  if (!folder) return;
+  pdfByDate[date] = folder;
+}
+
+function registerGeneratedPdfsFromFiles(files) {
+  pdfByDate = {};
+  files.forEach((file) => {
+    const parts = file.split(/[/\\]/);
+    const filename = parts[parts.length - 1] || "";
+    const match = filename.match(/^screenshots_(.+)\.pdf$/);
+    if (!match) return;
+    const folder = parts[parts.length - 2] || "";
+    if (folder) pdfByDate[match[1]] = folder;
+  });
+}
+
+function updatePdfActionButtons(date) {
+  const hasPdf = Boolean(pdfByDate[date]);
+  const escaped = CSS.escape(date);
+  document
+    .querySelectorAll(`.view-date[data-date="${escaped}"], .explorer-date[data-date="${escaped}"]`)
+    .forEach((btn) => btn.classList.toggle("hidden", !hasPdf));
+}
+
+async function openPdfInExplorer(date) {
+  const folder = pdfByDate[date];
+  if (!folder) return;
+  await api(
+    `/api/open-pdf/${encodeURIComponent(folder)}/${encodeURIComponent(date)}`,
+    { method: "POST" }
+  );
+}
+
+function openPdfViewer(date) {
+  const folder = pdfByDate[date];
+  if (!folder) return;
+  currentPdfDate = date;
+  $("pdf-viewer-title").textContent = `screenshots_${date}.pdf`;
+  $("pdf-viewer").src = pdfViewUrl(folder, date);
+  $("pdf-viewer-section").classList.remove("hidden");
+  $("pdf-viewer-section").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function closePdfViewer() {
+  $("pdf-viewer-section").classList.add("hidden");
+  $("pdf-viewer").src = "";
+  currentPdfDate = "";
+}
+
 function renderDateGroups() {
   const groups = filteredDateGroups();
   const container = $("date-groups");
@@ -573,6 +689,7 @@ function renderDateGroups() {
   const allFlat = flatImagesFromGroups(groups);
 
   groups.forEach((group) => {
+    const hasPdf = Boolean(pdfByDate[group.date]);
     const section = document.createElement("div");
     section.className = "date-group";
     section.innerHTML = `
@@ -580,7 +697,8 @@ function renderDateGroups() {
         <h3>${group.date} &mdash; ${group.count} images</h3>
         <div class="button-row">
           <button class="btn primary gen-date" data-date="${group.date}">Generate PDF</button>
-          <a class="btn secondary dl-date hidden" data-date="${group.date}" href="#" target="_blank">Download PDF</a>
+          <button type="button" class="btn secondary view-date${hasPdf ? "" : " hidden"}" data-date="${group.date}">View PDF</button>
+          <button type="button" class="btn secondary explorer-date${hasPdf ? "" : " hidden"}" data-date="${group.date}">Open in Explorer</button>
         </div>
       </div>
       <div class="thumb-grid"></div>
@@ -610,23 +728,38 @@ function renderDateGroups() {
 
   container.querySelectorAll(".gen-date").forEach((btn) => {
     btn.addEventListener("click", async () => {
+      const date = btn.dataset.date;
       try {
         const result = await api("/api/generate-pdf", {
           method: "POST",
           body: JSON.stringify({
-            date: btn.dataset.date,
+            date,
             channel_name: savedChannelLabel || selectedChannelName(),
           }),
         });
-        lastOutputFolder = result.output_folder?.split(/[/\\]/).pop() || "";
-        updateDownloadLinks();
-        toast(`PDF saved to ${result.output_folder}`);
+        registerGeneratedPdf(date, result.output_folder || "");
+        updatePdfActionButtons(date);
+        openPdfViewer(date);
+        toast(`PDF ready for ${date}`);
       } catch (err) {
         toast(err.message, "err");
       }
     });
   });
-  updateDownloadLinks();
+
+  container.querySelectorAll(".view-date").forEach((btn) => {
+    btn.addEventListener("click", () => openPdfViewer(btn.dataset.date));
+  });
+
+  container.querySelectorAll(".explorer-date").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await openPdfInExplorer(btn.dataset.date);
+      } catch (err) {
+        toast(err.message, "err");
+      }
+    });
+  });
 }
 
 async function loadResults() {
@@ -636,6 +769,7 @@ async function loadResults() {
   cachedResults = data;
   if (data.dates_found > 0) {
     $("results-section").classList.remove("hidden");
+    $("reset-downloads-btn").disabled = false;
   } else {
     $("results-section").classList.add("hidden");
     return;
@@ -656,17 +790,6 @@ async function loadResults() {
 
 $("date-filter").addEventListener("change", renderDateGroups);
 
-function updateDownloadLinks() {
-  document.querySelectorAll(".dl-date").forEach((link) => {
-    if (!lastOutputFolder) {
-      link.classList.add("hidden");
-      return;
-    }
-    link.href = `/api/download-pdf/${encodeURIComponent(lastOutputFolder)}/${link.dataset.date}`;
-    link.classList.remove("hidden");
-  });
-}
-
 $("generate-all-btn").addEventListener("click", async () => {
   try {
     const result = await api("/api/generate-pdf", {
@@ -676,13 +799,21 @@ $("generate-all-btn").addEventListener("click", async () => {
         channel_name: savedChannelLabel || selectedChannelName(),
       }),
     });
-    lastOutputFolder = result.output_folder?.split(/[/\\]/).pop() || "";
-    updateDownloadLinks();
-    const deleted = result.deleted_images ?? 0;
-    toast(
-      `Generated ${result.generated} PDF(s) in ${result.output_folder}. Deleted ${deleted} image(s).`
-    );
+    registerGeneratedPdfsFromFiles(result.files || []);
+    toast(`Generated ${result.generated} PDF(s) in ${result.output_folder}.`);
     await loadResults();
+    const dates = Object.keys(pdfByDate).sort().reverse();
+    if (dates.length) openPdfViewer(dates[0]);
+  } catch (err) {
+    toast(err.message, "err");
+  }
+});
+
+$("pdf-viewer-close").addEventListener("click", closePdfViewer);
+$("pdf-explorer-btn").addEventListener("click", async () => {
+  if (!currentPdfDate) return;
+  try {
+    await openPdfInExplorer(currentPdfDate);
   } catch (err) {
     toast(err.message, "err");
   }
