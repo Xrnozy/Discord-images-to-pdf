@@ -23,10 +23,14 @@ from backend.env_config import (
     save_retrieval_selection,
 )
 from backend.image_processor import (
+    dates_on_disk,
     delete_all_downloaded_images,
     ensure_thumbnail,
+    list_images_by_folder_name,
     process_attachment,
     prune_missing_downloads,
+    reset_selection_downloads,
+    sync_channel_from_disk,
     sync_downloads_from_disk,
 )
 from backend.models import (
@@ -34,6 +38,7 @@ from backend.models import (
     ConnectResponse,
     GeneratePdfRequest,
     JobProgress,
+    ResetDownloadsRequest,
     RetrieveRequest,
     SaveSelectionRequest,
 )
@@ -69,7 +74,37 @@ _job: dict[str, Any] = {
     "error": None,
     "channel_ids": [],
     "newest_message_id": None,
+    "paused": False,
+    "stop_requested": False,
+    "resume_event": None,
 }
+
+
+def _active_job_statuses() -> tuple[str, ...]:
+    return ("running", "paused")
+
+
+async def _wait_while_paused() -> bool:
+    """Block while paused. Returns False if stop was requested."""
+    while _job.get("paused"):
+        _job["status"] = "paused"
+        if _job["phase"] != "Paused — click Continue to resume.":
+            _job["phase"] = "Paused — click Continue to resume."
+        event = _job.get("resume_event")
+        if event:
+            await event.wait()
+        else:
+            await asyncio.sleep(0.25)
+        if _job.get("stop_requested"):
+            return False
+    if _job.get("stop_requested"):
+        return False
+    _job["status"] = "running"
+    return True
+
+
+def _job_is_stopped() -> bool:
+    return bool(_job.get("stop_requested"))
 
 
 def _save_token(token: str) -> None:
@@ -105,8 +140,12 @@ def _reset_job() -> None:
             "error": None,
             "channel_ids": [],
             "newest_message_id": None,
+            "paused": False,
+            "stop_requested": False,
+            "resume_event": asyncio.Event(),
         }
     )
+    _job["resume_event"].set()
 
 
 def _group_by_date(images: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -140,12 +179,47 @@ def _message_local_date(message: dict[str, Any]) -> str:
     )
 
 
-def _dates_for_channel(channel_id: str | None) -> list[str]:
+def _dates_for_channel(
+    channel_id: str | None,
+    channel_name: str | None = None,
+    all_in_category: bool = False,
+) -> list[str]:
+    images = _images_for_selection(channel_id, channel_name, all_in_category)
+    dates = {img["capture_date"] for img in images}
+    if channel_name and not all_in_category:
+        dates.update(dates_on_disk(channel_name))
+    return sorted(dates, reverse=True)
+
+
+def _images_for_selection(
+    channel_id: str | None = None,
+    channel_name: str | None = None,
+    all_in_category: bool = False,
+) -> list[dict[str, Any]]:
+    prune_missing_downloads()
+    if all_in_category:
+        sync_downloads_from_disk()
+        allowed = set(get_retrieval_channel_ids())
+        if allowed:
+            return [i for i in list_all_images() if i.get("channel_id") in allowed]
+        return []
+    if channel_name:
+        sync_channel_from_disk(channel_name, channel_id or "")
+    else:
+        sync_downloads_from_disk()
+
+    images: list[dict[str, Any]] = []
     if channel_id:
         images = list_images_for_channel(channel_id)
-    else:
-        images = _images_for_saved_channel()
-    return sorted({img["capture_date"] for img in images}, reverse=True)
+    if channel_name:
+        folder_images = list_images_by_folder_name(channel_name)
+        seen = {i["attachment_id"] for i in images}
+        images.extend(i for i in folder_images if i["attachment_id"] not in seen)
+    if images:
+        return images
+    if channel_id or channel_name:
+        return []
+    return _images_for_saved_channel()
 
 
 def _retrieval_folder_label(
@@ -212,14 +286,25 @@ async def _run_retrieval(req: RetrieveRequest) -> None:
     try:
         sync_downloads_from_disk()
         for channel_id, channel_name in channel_ids:
+            if _job_is_stopped():
+                break
+            if not await _wait_while_paused():
+                break
+
             stop_at = None if req.full_rescan else get_watermark(channel_id)
             # ponytail: if images were cleared (e.g. after PDF gen), rescan full history
             if not req.full_rescan and stop_at and not list_images_for_channel(channel_id):
                 stop_at = None
             channel_newest: str | None = None
+            channel_finished = False
             async for message in client.iter_messages(
                 channel_id, stop_at_message_id=stop_at
             ):
+                if not await _wait_while_paused():
+                    break
+                if _job_is_stopped():
+                    break
+
                 if channel_newest is None:
                     channel_newest = message["id"]
 
@@ -235,12 +320,18 @@ async def _run_retrieval(req: RetrieveRequest) -> None:
                             )
                         continue
                     if msg_date < target_date:
+                        channel_finished = True
                         break
 
                 attachments = message.get("attachments") or []
                 for attachment in attachments:
                     if not DiscordClient.is_image_attachment(attachment):
                         continue
+                    if not await _wait_while_paused():
+                        break
+                    if _job_is_stopped():
+                        break
+
                     _job["images_found"] += 1
                     from backend.store import image_exists
 
@@ -252,15 +343,28 @@ async def _run_retrieval(req: RetrieveRequest) -> None:
                         session_downloads += 1
                         _job["images_downloaded"] = session_downloads
 
+                if _job_is_stopped():
+                    break
+
                 if _job["messages_checked"] % 10 == 0:
                     _job["progress"] = min(
                         0.95,
                         _job["messages_checked"]
                         / max(_job["messages_checked"] + 100, 1),
                     )
+            else:
+                channel_finished = True
 
-            if channel_newest and not filter_by_date:
+            if channel_finished and channel_newest and not filter_by_date:
                 set_watermark(channel_id, channel_newest)
+
+            if _job_is_stopped():
+                break
+
+        if _job_is_stopped():
+            _job["status"] = "stopped"
+            _job["phase"] = "Stopped. Downloaded images were kept."
+            return
 
         _job["phase"] = "Processing..."
         _job["progress"] = 1.0
@@ -317,18 +421,16 @@ async def api_status():
 
 
 def _images_for_saved_channel() -> list[dict[str, Any]]:
-    images = list_all_images()
     saved = get_saved_selection()
+    channel_name = saved.get("channel_name")
     channel_ids = get_retrieval_channel_ids()
-    if not channel_ids:
-        return images
     if saved.get("all_in_category"):
-        allowed = set(channel_ids)
-        return [i for i in images if i.get("channel_id") in allowed]
-    if len(channel_ids) == 1:
-        cid = channel_ids[0]
-        return [i for i in images if i.get("channel_id") == cid]
-    return images
+        return _images_for_selection(None, None, all_in_category=True)
+    if len(channel_ids) == 1 and channel_name:
+        return _images_for_selection(channel_ids[0], channel_name)
+    if channel_name:
+        return _images_for_selection(None, channel_name)
+    return list_all_images()
 
 
 def _pdf_folder_label(body_channel_name: str | None) -> str:
@@ -389,8 +491,16 @@ async def api_categories(guild_id: str):
 
 
 @app.get("/api/dates")
-async def api_dates(channel_id: str | None = None):
-    return {"dates": _dates_for_channel(channel_id)}
+async def api_dates(
+    channel_id: str | None = None,
+    channel_name: str | None = None,
+    all_in_category: bool = False,
+):
+    return {
+        "dates": _dates_for_channel(
+            channel_id, channel_name, all_in_category=all_in_category
+        )
+    }
 
 
 @app.post("/api/save-selection")
@@ -424,7 +534,7 @@ async def api_channels(guild_id: str, category_id: str | None = None):
 @app.post("/api/retrieve")
 async def api_retrieve(body: RetrieveRequest):
     async with _job_lock:
-        if _job["status"] == "running":
+        if _job["status"] in _active_job_statuses():
             raise HTTPException(status_code=409, detail="A retrieval job is already running.")
         _reset_job()
         _job["status"] = "running"
@@ -442,16 +552,86 @@ async def api_job():
         images_downloaded=_job["images_downloaded"],
         progress=_job["progress"],
         error=_job["error"],
+        paused=bool(_job.get("paused")),
     )
 
 
-@app.get("/api/results")
-async def api_results(channel_id: str | None = None):
-    sync_downloads_from_disk()
-    if channel_id:
-        images = list_images_for_channel(channel_id)
+@app.post("/api/job/pause")
+async def api_job_pause():
+    if _job["status"] not in _active_job_statuses():
+        raise HTTPException(status_code=400, detail="No running job to pause.")
+    _job["paused"] = True
+    event = _job.get("resume_event")
+    if event:
+        event.clear()
+    _job["status"] = "paused"
+    _job["phase"] = "Paused — click Continue to resume."
+    return {"paused": True}
+
+
+@app.post("/api/job/resume")
+async def api_job_resume():
+    if _job["status"] not in _active_job_statuses():
+        raise HTTPException(status_code=400, detail="No paused job to resume.")
+    _job["paused"] = False
+    event = _job.get("resume_event")
+    if event:
+        event.set()
+    _job["status"] = "running"
+    _job["phase"] = "Retrieving Discord messages..."
+    return {"paused": False}
+
+
+@app.post("/api/job/stop")
+async def api_job_stop():
+    if _job["status"] not in _active_job_statuses():
+        raise HTTPException(status_code=400, detail="No running job to stop.")
+    _job["stop_requested"] = True
+    _job["paused"] = False
+    event = _job.get("resume_event")
+    if event:
+        event.set()
+    return {"stopped": True}
+
+
+@app.post("/api/reset-downloads")
+async def api_reset_downloads(body: ResetDownloadsRequest):
+    if _job["status"] in _active_job_statuses():
+        raise HTTPException(
+            status_code=409,
+            detail="Stop the retrieval job before resetting downloads.",
+        )
+    if body.all_in_category:
+        category_channel_ids = get_retrieval_channel_ids()
+        if not category_channel_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="No saved category channels to reset.",
+            )
+        deleted = reset_selection_downloads(
+            all_in_category=True,
+            category_channel_ids=category_channel_ids,
+        )
     else:
-        images = _images_for_saved_channel()
+        if not body.channel_id and not body.channel_name:
+            raise HTTPException(
+                status_code=400,
+                detail="Select a channel to reset.",
+            )
+        deleted = reset_selection_downloads(
+            channel_id=body.channel_id,
+            channel_name=body.channel_name,
+        )
+    return {"deleted": deleted}
+
+
+@app.get("/api/results")
+async def api_results(
+    channel_id: str | None = None,
+    channel_name: str | None = None,
+    all_in_category: bool = False,
+):
+    images = _images_for_selection(channel_id, channel_name, all_in_category)
     dates = _group_by_date(images)
     return {
         "messages_checked": _job["messages_checked"],

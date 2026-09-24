@@ -73,13 +73,22 @@ class ImageRecord(BaseModel):
 
 
 class JobProgress(BaseModel):
-    status: Literal["idle", "running", "complete", "error"]
+    status: Literal[
+        "idle", "running", "paused", "stopped", "complete", "error"
+    ]
     phase: str = ""
     messages_checked: int = 0
     images_found: int = 0
     images_downloaded: int = 0
     progress: float = 0.0
     error: str | None = None
+    paused: bool = False
+
+
+class ResetDownloadsRequest(BaseModel):
+    channel_id: str | None = None
+    channel_name: str | None = None
+    all_in_category: bool = False
 
 
 class RetrievalSummary(BaseModel):

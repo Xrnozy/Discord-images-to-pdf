@@ -19,6 +19,27 @@ function selectedChannelName() {
   return ch && ch.value ? ch.textContent : "screenshots";
 }
 
+function selectionQueryParams() {
+  const params = new URLSearchParams();
+  if ($("all-in-category").checked) {
+    if (!$("category-select").value) return null;
+    params.set("all_in_category", "true");
+    params.set("channel_name", selectedChannelName());
+    return params;
+  }
+  if (!$("channel-select").value) return null;
+  params.set("channel_id", $("channel-select").value);
+  params.set("channel_name", selectedChannelName());
+  return params;
+}
+
+function hasChannelSelection() {
+  if ($("all-in-category").checked) {
+    return !!$("category-select").value;
+  }
+  return !!$("channel-select").value;
+}
+
 function toast(msg, type = "ok") {
   const el = $("toast");
   el.textContent = msg;
@@ -51,10 +72,23 @@ function showConnected(username, tokenSaved = false, retrievalChannel = "") {
   $("select-section").classList.remove("hidden");
   $("retrieve-btn").disabled = false;
   $("full-rescan-btn").disabled = false;
+  $("reset-downloads-btn").disabled = false;
   if (tokenSaved) {
     $("saved-token-row").classList.remove("hidden");
     $("token-row").classList.add("hidden");
   }
+}
+
+function setJobControls({ running, paused }) {
+  $("pause-btn").classList.toggle("hidden", !running || paused);
+  $("continue-btn").classList.toggle("hidden", !paused);
+  $("stop-btn").classList.toggle("hidden", !running && !paused);
+}
+
+function setRetrievalButtonsEnabled(enabled) {
+  $("retrieve-btn").disabled = !enabled;
+  $("full-rescan-btn").disabled = !enabled;
+  $("reset-downloads-btn").disabled = !enabled;
 }
 
 function showTokenInput() {
@@ -145,6 +179,7 @@ async function checkStatus() {
       await loadGuilds();
       await restoreSavedSelection(data.saved_selection);
       await loadResults();
+      await resumeJobPollingIfNeeded();
       return;
     }
     if (data.token_saved) {
@@ -214,29 +249,44 @@ $("category-select").addEventListener("change", async (e) => {
   selectedChannel = "";
   $("channel-select").disabled = !selectedCategory;
   $("channel-select").innerHTML = '<option value="">Select Channel</option>';
+  $("results-section").classList.add("hidden");
   if (!selectedCategory) return;
   await loadChannelsForCategory(selectedGuild, selectedCategory);
-  if ($("all-in-category").checked) persistSelection();
+  if ($("all-in-category").checked) {
+    await persistSelection();
+    await loadRetrieveDateOptions();
+    await loadResults();
+  }
 });
 
 $("channel-select").addEventListener("change", async (e) => {
   selectedChannel = e.target.value;
   await persistSelection();
   await loadRetrieveDateOptions();
+  if (selectedChannel) {
+    await loadResults();
+  } else {
+    $("results-section").classList.add("hidden");
+  }
 });
 
 $("all-in-category").addEventListener("change", async () => {
-  persistSelection();
+  await persistSelection();
   await loadRetrieveDateOptions();
+  if (hasChannelSelection()) {
+    await loadResults();
+  } else {
+    $("results-section").classList.add("hidden");
+  }
 });
 
 async function loadRetrieveDateOptions() {
   const sel = $("retrieve-date-filter");
   const current = sel.value;
   sel.innerHTML = '<option value="all">All dates</option>';
-  const channelId = $("all-in-category").checked ? "" : $("channel-select").value;
+  const params = selectionQueryParams();
   try {
-    const q = channelId ? `?channel_id=${encodeURIComponent(channelId)}` : "";
+    const q = params ? `?${params}` : "";
     const data = await api(`/api/dates${q}`);
     data.dates.forEach((d) => {
       const opt = document.createElement("option");
@@ -298,8 +348,8 @@ async function startRetrieval(fullRescan) {
 
   $("progress-section").classList.remove("hidden");
   $("results-section").classList.add("hidden");
-  $("retrieve-btn").disabled = true;
-  $("full-rescan-btn").disabled = true;
+  setRetrievalButtonsEnabled(false);
+  setJobControls({ running: true, paused: false });
 
   try {
     await api("/api/retrieve", {
@@ -317,14 +367,105 @@ async function startRetrieval(fullRescan) {
     savedChannelLabel = selectedChannelName();
     pollTimer = setInterval(pollJob, 800);
   } catch (err) {
-    $("retrieve-btn").disabled = false;
-    $("full-rescan-btn").disabled = false;
+    setRetrievalButtonsEnabled(true);
+    setJobControls({ running: false, paused: false });
     toast(err.message, "err");
   }
 }
 
 $("retrieve-btn").addEventListener("click", () => startRetrieval(false));
 $("full-rescan-btn").addEventListener("click", () => startRetrieval(true));
+
+$("pause-btn").addEventListener("click", async () => {
+  try {
+    await api("/api/job/pause", { method: "POST" });
+    setJobControls({ running: true, paused: true });
+  } catch (err) {
+    toast(err.message, "err");
+  }
+});
+
+$("continue-btn").addEventListener("click", async () => {
+  try {
+    await api("/api/job/resume", { method: "POST" });
+    setJobControls({ running: true, paused: false });
+  } catch (err) {
+    toast(err.message, "err");
+  }
+});
+
+$("stop-btn").addEventListener("click", async () => {
+  try {
+    await api("/api/job/stop", { method: "POST" });
+    toast("Stopping retrieval...");
+  } catch (err) {
+    toast(err.message, "err");
+  }
+});
+
+$("reset-downloads-btn").addEventListener("click", resetDownloads);
+
+async function resetDownloads() {
+  if (!hasChannelSelection()) {
+    toast("Select a channel first.", "err");
+    return;
+  }
+  const label = selectedChannelName();
+  const scope = $("all-in-category").checked
+    ? "all channels in this category"
+    : "only the selected channel";
+  const ok = confirm(
+    `Reset downloaded screenshots for "${label}"?\n\n` +
+      `Only ${scope} will be deleted. Other channels in downloads/ are not affected.\n` +
+      "PDFs in output/ are not affected.\n\n" +
+      "This cannot be undone."
+  );
+  if (!ok) return;
+
+  const params = selectionQueryParams();
+  const body = {
+    channel_id: params?.get("channel_id") || null,
+    channel_name: params?.get("channel_name") || label,
+    all_in_category: params?.get("all_in_category") === "true",
+  };
+
+  try {
+    const result = await api("/api/reset-downloads", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    cachedResults = null;
+    $("results-section").classList.add("hidden");
+    $("date-groups").innerHTML = "";
+    await loadRetrieveDateOptions();
+    toast(`Reset complete. ${result.deleted} image(s) removed.`);
+  } catch (err) {
+    toast(err.message, "err");
+  }
+}
+
+async function resumeJobPollingIfNeeded() {
+  try {
+    const job = await api("/api/job");
+    if (job.status !== "running" && job.status !== "paused") return;
+    $("progress-section").classList.remove("hidden");
+    setRetrievalButtonsEnabled(false);
+    setJobControls({ running: true, paused: job.status === "paused" });
+    pollTimer = setInterval(pollJob, 800);
+    await pollJob();
+  } catch {
+    /* no active job */
+  }
+}
+
+async function finishJob(job, message, messageType = "ok") {
+  clearInterval(pollTimer);
+  setRetrievalButtonsEnabled(true);
+  setJobControls({ running: false, paused: false });
+  await loadResults();
+  await loadRetrieveDateOptions();
+  if (message) toast(message, messageType);
+}
 
 async function pollJob() {
   const job = await api("/api/job");
@@ -334,27 +475,30 @@ async function pollJob() {
   $("stat-downloaded").textContent = job.images_downloaded.toLocaleString();
   $("progress-fill").style.width = `${Math.round(job.progress * 100)}%`;
 
+  if (job.status === "paused") {
+    setJobControls({ running: true, paused: true });
+    return;
+  }
+
   if (job.status === "error") {
-    clearInterval(pollTimer);
-    toast(job.error || "Retrieval failed.", "err");
-    $("retrieve-btn").disabled = false;
-    $("full-rescan-btn").disabled = false;
+    await finishJob(job, job.error || "Retrieval failed.", "err");
+    return;
+  }
+
+  if (job.status === "stopped") {
+    await finishJob(job, "Retrieval stopped. Downloaded images were kept.");
     return;
   }
 
   if (job.status === "complete") {
-    clearInterval(pollTimer);
-    $("retrieve-btn").disabled = false;
-    $("full-rescan-btn").disabled = false;
-    await loadResults();
-    await loadRetrieveDateOptions();
     if (job.messages_checked === 0 && job.images_found === 0) {
-      toast(
+      await finishJob(
+        job,
         "No new images found. Use Full Rescan to reload entire channel history.",
         "err"
       );
     } else {
-      toast("Retrieval complete.");
+      await finishJob(job, "Retrieval complete.");
     }
   }
 }
@@ -486,7 +630,9 @@ function renderDateGroups() {
 }
 
 async function loadResults() {
-  const data = await api("/api/results");
+  const params = selectionQueryParams();
+  const path = params ? `/api/results?${params}` : "/api/results";
+  const data = await api(path);
   cachedResults = data;
   if (data.dates_found > 0) {
     $("results-section").classList.remove("hidden");
@@ -494,12 +640,15 @@ async function loadResults() {
     $("results-section").classList.add("hidden");
     return;
   }
+  const msgLine =
+    data.messages_checked > 0
+      ? `Messages checked: ${data.messages_checked.toLocaleString()}<br>`
+      : "";
   $("results-summary").innerHTML = `
-    <strong>Retrieval Complete</strong><br>
-    Messages checked: ${data.messages_checked.toLocaleString()}<br>
-    Images found: ${data.images_found.toLocaleString()}<br>
-    Images downloaded: ${data.images_downloaded.toLocaleString()}<br>
-    Dates found: ${data.dates_found}
+    <strong>Screenshots ready</strong> (${selectedChannelName()})<br>
+    ${msgLine}
+    Images: ${data.images_found.toLocaleString()}<br>
+    Dates: ${data.dates_found}
   `;
   populateDateFilter(data.dates);
   renderDateGroups();

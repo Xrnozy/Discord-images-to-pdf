@@ -59,7 +59,18 @@ output/
 
 Each time you generate PDFs, one folder is created named `{channel}-{date}-generated`. The channel name comes from your last retrieval and is saved in `.env` as `RETRIEVAL_CHANNEL_NAME`. All PDFs from that run go inside it.
 
-Downloaded originals are stored in `downloads/`. Metadata index is in `data/index.json`.
+Downloaded originals are stored in `downloads/`:
+
+```
+downloads/
+└── channel-name/
+    └── 2026-09-14/
+        └── screenshots/
+            ├── 1549026635569700894.jpg
+            └── ...
+```
+
+Metadata index is in `data/index.json`.
 
 ## Incremental Retrieval
 
