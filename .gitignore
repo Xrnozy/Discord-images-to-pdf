@@ -1,0 +1,33 @@
+# --- Secrets & credentials (never commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials.json
+credentials/
+
+# --- Local user data (screenshots, PDFs, metadata) ---
+downloads/
+output/
+data/
+
+# --- Logs (may contain paths or session metadata) ---
+*.log
+debug-*.log
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini

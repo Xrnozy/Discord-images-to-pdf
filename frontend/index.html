@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Discord Screenshot PDF</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Discord Screenshot PDF</h1>
+      <p class="subtitle">Retrieve screenshots from Discord and generate full-resolution PDFs by date.</p>
+    </header>
+
+    <section class="card" id="permissions-section">
+      <h2>Discord Permissions</h2>
+      <p>Your bot needs these permissions in the target channel:</p>
+      <ul>
+        <li>View Channel</li>
+        <li>Read Message History</li>
+        <li>Access message attachments</li>
+      </ul>
+      <p>In the <a href="https://discord.com/developers/applications" target="_blank" rel="noopener">Discord Developer Portal</a>, enable <strong>Message Content Intent</strong> if the bot must read attachments on messages from other users.</p>
+    </section>
+
+    <section class="card" id="connect-section">
+      <h2>Discord Configuration</h2>
+      <p class="hint">Your bot token is saved locally in <code>.env</code> on this PC only. You only need to enter it once.</p>
+      <div id="saved-token-row" class="saved-token-row hidden">
+        <span id="saved-token-label">Token saved on this PC</span>
+        <button id="change-token-btn" type="button" class="btn secondary">Change token</button>
+      </div>
+      <div class="form-row" id="token-row">
+        <label for="bot-token">Bot Token</label>
+        <div class="input-group">
+          <input type="password" id="bot-token" placeholder="Enter your bot token" autocomplete="off">
+          <button id="connect-btn" class="btn primary">Connect</button>
+        </div>
+      </div>
+      <p id="connect-status" class="status-text"></p>
+    </section>
+
+    <section class="card hidden" id="select-section">
+      <h2>Select Channel</h2>
+      <div class="form-grid">
+        <div class="form-row">
+          <label for="guild-select">Server</label>
+          <select id="guild-select"><option value="">Select Server</option></select>
+        </div>
+        <div class="form-row">
+          <label for="category-select">Category</label>
+          <select id="category-select" disabled><option value="">Select Category</option></select>
+        </div>
+        <div class="form-row">
+          <label for="channel-select">Channel</label>
+          <select id="channel-select" disabled><option value="">Select Channel</option></select>
+        </div>
+      </div>
+      <label class="checkbox-row">
+        <input type="checkbox" id="all-in-category">
+        All channels in this category
+      </label>
+      <div class="form-row">
+        <label for="retrieve-date-filter">Retrieve dates</label>
+        <select id="retrieve-date-filter">
+          <option value="all">All dates</option>
+        </select>
+      </div>
+      <div class="form-row hidden" id="retrieve-custom-date-row">
+        <label for="retrieve-custom-date">Custom date</label>
+        <input type="date" id="retrieve-custom-date">
+      </div>
+      <div class="button-row">
+        <button id="retrieve-btn" class="btn primary" disabled>Retrieve Screenshots</button>
+        <button id="full-rescan-btn" class="btn secondary" disabled>Full Rescan</button>
+      </div>
+    </section>
+
+    <section class="card hidden" id="progress-section">
+      <h2>Progress</h2>
+      <p id="progress-phase">Retrieving Discord messages...</p>
+      <div class="progress-bar"><div id="progress-fill"></div></div>
+      <div class="stats">
+        <span>Messages checked: <strong id="stat-messages">0</strong></span>
+        <span>Images found: <strong id="stat-found">0</strong></span>
+        <span>Images downloaded: <strong id="stat-downloaded">0</strong></span>
+      </div>
+    </section>
+
+    <section class="card hidden" id="results-section">
+      <h2>Results</h2>
+      <div id="results-summary" class="summary"></div>
+      <div class="form-row">
+        <label for="date-filter">Filter by date</label>
+        <select id="date-filter">
+          <option value="all">All dates</option>
+        </select>
+      </div>
+      <div class="button-row">
+        <button id="generate-all-btn" class="btn primary">Generate All PDFs</button>
+      </div>
+      <div id="date-groups"></div>
+    </section>
+  </div>
+
+  <div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true" aria-label="Image preview">
+    <button type="button" class="lightbox-close" id="lightbox-close" aria-label="Close">&times;</button>
+    <button type="button" class="lightbox-nav lightbox-prev" id="lightbox-prev" aria-label="Previous">&lsaquo;</button>
+    <button type="button" class="lightbox-nav lightbox-next" id="lightbox-next" aria-label="Next">&rsaquo;</button>
+    <div class="lightbox-content">
+      <img id="lightbox-img" src="" alt="">
+      <div id="lightbox-meta" class="lightbox-meta"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
